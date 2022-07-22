@@ -3,7 +3,7 @@
 
 mod dump;
 
-use rp_pico::{entry, hal::rom_data::{rom_version_number}};
+use rp_pico::{entry, hal::rom_data::{rom_version_number, reset_to_usb_boot}};
 use panic_halt as _;
 use rp_pico::hal::pac;
 use rp_pico::hal;
@@ -113,6 +113,7 @@ fn main() -> ! {
                     // check for reset R
                     if buf[0] == 82 {
                         drop( serial.write(b"Going down!!!!\r\n") );
+                        reset_to_usb_boot(0,0);
                         //watchdog.enable_tick_generation((rp_pico::XOSC_CRYSTAL_FREQ / 1_000_000) as u8);
                     }
                     // check for S
