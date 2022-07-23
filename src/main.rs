@@ -19,10 +19,18 @@ const COUNTER_OFFSET : u32= 0x0010_0000;
 const COUNTER_ADDRESS : u32= FLASH_BASE + COUNTER_OFFSET; 
 
 
+// Pull in any important traits
+use rp_pico::hal::prelude::*;
+
+// Import the SPI abstraction:
+use rp_pico::hal::spi;
+
 #[entry]
 fn main() -> ! {
 
+
     let mut pac = pac::Peripherals::take().unwrap();
+    let cp = pac::CorePeripherals::take().unwrap();
 
     let mut watchdog = hal::Watchdog::new(pac.WATCHDOG);
 
@@ -49,9 +57,14 @@ fn main() -> ! {
         &mut pac.RESETS,
     );
 
+    
     // Set the LED to be an output
     let mut led_pin = pins.led.into_push_pull_output();
     led_pin.set_high().unwrap();
+
+    let mut delay = cortex_m::delay::Delay::new(cp.SYST, 125_000_000);
+
+    delay.delay_ms(1);
 
     // Set up the USB driver
     let usb_bus = UsbBusAllocator::new(hal::usb::UsbBus::new(
@@ -82,8 +95,68 @@ fn main() -> ! {
     writeln!(&mut strbuf, "Version = {} !\n", version_nb).unwrap();
     
 
-    flash_experiment();
+    //flash_experiment();
 
+    // SETUP SCREEN
+
+    // SCL		GP10 (pin 14)
+    // SDA		GP11 (pin 15) (MOSI)
+    // RES		GP12 (pin 16)
+    // DC		GP13 (pin 17)
+
+    // Configure pins
+    // These are implicitly used by the spi driver if they are in the correct mode
+    let _spi_sclk = pins.gpio10.into_mode::<hal::gpio::FunctionSpi>();
+    let _spi_mosi = pins.gpio11.into_mode::<hal::gpio::FunctionSpi>();
+
+    let dc = pins.gpio13.into_push_pull_output();
+    let mut res = pins.gpio12.into_push_pull_output();
+
+    // Chip select
+    // let cs = pins.gpio15.into_push_pull_output();
+    // Backlight
+    // let bl = pins.gpio14.into_push_pull_output();
+
+    // Setup and init the SPI device (SPI1 !)
+    let spi = rp_pico::hal::Spi::<_, _, 8>::new(pac.SPI1);
+
+    let spi = spi.init(
+        &mut pac.RESETS,
+        // check if 16 MHZ clocks.peripheral_clock.freq(),
+        16_000_000u32,
+        32_000_000u32,
+        &embedded_hal::spi::MODE_3,
+    );
+
+    // reset LCD
+    res.set_high().unwrap();
+    delay.delay_ms(50);
+    res.set_low().unwrap();
+    delay.delay_ms(150);
+    res.set_high().unwrap();
+    delay.delay_ms(150);
+
+
+
+    // let spi = spi.init(
+    //     &mut pac.RESETS,
+    //     // check if 16 MHZ clocks.peripheral_clock.freq(),
+    //     16_000_000u32,
+    //     32_000_000u32,
+    //     &embedded_hal::spi::MODE_3,
+    // );
+
+    // let display_interface = display_interface_spi::SPIInterface::new(spi, dc, cs);
+    
+    // let mut display = st7789::ST7789::new(
+    //     display_interface,
+    //     None,
+    //     Some(bl),
+    //     properties.display_width as _,
+    //     properties.display_height as _,
+    // );
+
+    // END SCREEN SETUP
     let mut said_hello = false;
     loop {
         // A welcome message at the beginning

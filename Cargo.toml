@@ -19,6 +19,7 @@ arrayvec = { version = "0.7.1", default-features = false }
 
 # We're using a Pico by default on this template
 rp-pico = "0.4"
+st7789 = "0.6.1"
 # but you can use any BSP. Uncomment this to use the pro_micro_rp2040 BSP instead
 # sparkfun-pro-micro-rp2040 = "0.3"
 
