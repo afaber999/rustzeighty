@@ -1,103 +1,17 @@
-//! # Pico SD Card Example
-//!
-//! Reads and writes a file from/to the SD Card that is formatted in FAT32.
-//! This example uses the SPI0 device of the Raspberry Pi Pico on the
-//! pins 4,5,6 and 7. If you don't use an external 3.3V power source,
-//! you can connect the +3.3V output on pin 36 to the SD card.
-//!
-//! SD Cards up to 2TB are supported by the `embedded_sdmmc` crate.
-//! I've tested this with a 64GB micro SD card.
-//!
-//! You need to format the card with an regular old FAT32 filesystem
-//! and also make sure the first partition has the right type. This is how your
-//! `fdisk` output should look like:
-//!
-//! ```text
-//!     fdisk /dev/sdj
-//!
-//!     Welcome to fdisk (util-linux 2.34).
-//!     Changes will remain in memory only, until you decide to write them.
-//!     Be careful before using the write command.
-//!
-//!     Command (m for help): Disk /dev/sdj:
-//!     59,49 GiB, 63864569856 bytes, 124735488 sectors
-//!     Disk model: SD/MMC/MS/MSPRO
-//!     Units: sectors of 1 * 512 = 512 bytes
-//!     Sector size (logical/physical): 512 bytes / 512 bytes
-//!     I/O size (minimum/optimal): 512 bytes / 512 bytes
-//!     Disklabel type: dos
-//!     Disk identifier: 0x00000000
-//!
-//!     Device     Boot Start       End   Sectors  Size Id Type
-//!     /dev/sdj1        2048 124735487 124733440 59,5G  c W95 FAT32 (LBA)
-//! ```
-//!
-//! The important bit here is the _Type_ with `W95 FAT32 (LBA)`, other types
-//! are rejected by the `embedded_sdmmc` filesystem implementation.
-//!
-//! Formatting the partition can be done using `mkfs.fat`:
-//!
-//!     $ mkfs.fat /dev/sdj1
-//!
-//! In the following ASCII art the SD card is also connected to 5 strong pull up
-//! resistors. I've found varying values for these, from 50kOhm, 10kOhm
-//! down to 5kOhm.
-//! Stronger pull up resistors will eat more amperes, but also allow faster
-//! data rates.
-//!
-//! ```text
-//!                    +3.3V
-//!          Pull Ups ->||||
-//!                 4x[5kOhm]
-//!                     ||| \
-//!  _______________    |||  \
-//! |     DAT2/NC  9\---o||   \                            _|USB|_
-//! | S   DAT3/CS   1|---o+----+------SS--\               |1  R 40|
-//! | D   CMD/DI    2|----o----+-----MOSI-+-\             |2  P 39|
-//! |     VSS1      3|-- GND   |          | |         GND-|3    38|- GND
-//! | C   VDD       4|-- +3.3V |  /--SCK--+-+----SPI0 SCK-|4  P 37|
-//! | A   CLK/SCK   5|---------+-/        | \----SPI0 TX--|5  I 36|- +3.3V
-//! | R   VSS2      6|-- GND   |  /--MISO-+------SPI0 RX--|6  C   |
-//! | D   DAT0/DO   7|---------o-/        \------SPI0 CSn-|7  O   |
-//! |     DAT1/IRQ  8|-[5k]- +3.3V                        |       |
-//!  """"""""""""""""                                     |       |
-//!                                                       |       |
-//!                                                       .........
-//!                                                       |20   21|
-//!                                                        """""""
-//! Symbols:
-//!     - (+) crossing lines, not connected
-//!     - (o) connected lines
-//! ```
-//!
-//! The example can either be used with a probe to receive debug output
-//! and also the LED is used as status output. There are different blinking
-//! patterns.
-//!
-//! For every successful stage in the example the LED will blink long once.
-//! If everything is successful (9 long blink signals), the example will go
-//! into a loop and either blink in a _"short long"_ or _"short short long"_ pattern.
-//!
-//! If there are 5 different error patterns, all with short blinking pulses:
-//!
-//! - **2 short blink (in a loop)**: Block device could not be acquired, either
-//!   no SD card is present or some electrical problem.
-//! - **3 short blink (in a loop)**: Card size could not be retrieved.
-//! - **4 short blink (in a loop)**: Error getting volume/partition 0.
-//! - **5 short blink (in a loop)**: Error opening root directory.
-//! - **6 short blink (in a loop)**: Could not open file 'O.TST'.
-//!
-//! See the `Cargo.toml` file for Copyright and license details.
-
 #![no_std]
 #![no_main]
 
+mod dump;
+
+use arrayvec::ArrayString;
+use embedded_graphics::Drawable;
+use embedded_graphics::image::Image;
+use embedded_graphics::image::ImageRawLE;
+use embedded_graphics::pixelcolor::Rgb565;
+use embedded_graphics::prelude::Point;
+use embedded_graphics::prelude::RgbColor;
 // The macro for our start-up function
 use rp_pico::entry;
-
-// info!() and error!() macros for printing information to the debug output
-use defmt::*;
-use defmt_rtt as _;
 
 // Ensure we halt the program on panic (if we don't mention this crate it won't
 // be linked)
@@ -113,6 +27,8 @@ use embedded_time::rate::*;
 // register access
 use rp_pico::hal::pac;
 
+use rp_pico::hal::rom_data::reset_to_usb_boot;
+use rp_pico::hal::rom_data::rom_version_number;
 // Import the SPI abstraction:
 use rp_pico::hal::spi;
 
@@ -122,93 +38,32 @@ use rp_pico::hal::gpio;
 // A shorter alias for the Hardware Abstraction Layer, which provides
 // higher-level drivers.
 use rp_pico::hal;
+use core::{fmt::Write, slice};
 
-// Link in the embedded_sdmmc crate.
-// The `SdMmcSpi` is used for block level access to the card.
-// And the `Controller` gives access to the FAT filesystem functions.
-use embedded_sdmmc::{Controller, SdMmcSpi, TimeSource, Timestamp, VolumeIdx};
+use embedded_hal::digital::v2::OutputPin;
+use usb_device::class_prelude::UsbBusAllocator;
+use usb_device::device::UsbDeviceBuilder;
+use usb_device::device::UsbVidPid;
+use usbd_serial::SerialPort;
 
-// Get the file open mode enum:
-use embedded_sdmmc::filesystem::Mode;
+extern crate alloc;
+use alloc::vec::Vec;
+use alloc_cortex_m::CortexMHeap;
+use core::alloc::Layout;
 
-/// A dummy timesource, which is mostly important for creating files.
-#[derive(Default)]
-pub struct DummyTimesource();
+const FLASH_BASE : u32= 0x1000_0000;
+const COUNTER_OFFSET : u32= 0x0010_0000;
+const COUNTER_ADDRESS : u32= FLASH_BASE + COUNTER_OFFSET; 
 
-impl TimeSource for DummyTimesource {
-    // In theory you could use the RTC of the rp2040 here, if you had
-    // any external time synchronizing device.
-    fn get_timestamp(&self) -> Timestamp {
-        Timestamp {
-            year_since_1970: 0,
-            zero_indexed_month: 0,
-            zero_indexed_day: 0,
-            hours: 0,
-            minutes: 0,
-            seconds: 0,
-        }
-    }
-}
 
-// Setup some blinking codes:
-const BLINK_OK_LONG: [u8; 1] = [8u8];
-const BLINK_OK_SHORT_LONG: [u8; 4] = [1u8, 0u8, 6u8, 0u8];
-const BLINK_OK_SHORT_SHORT_LONG: [u8; 6] = [1u8, 0u8, 1u8, 0u8, 6u8, 0u8];
-const BLINK_ERR_2_SHORT: [u8; 4] = [1u8, 0u8, 1u8, 0u8];
-const BLINK_ERR_3_SHORT: [u8; 6] = [1u8, 0u8, 1u8, 0u8, 1u8, 0u8];
-const BLINK_ERR_4_SHORT: [u8; 8] = [1u8, 0u8, 1u8, 0u8, 1u8, 0u8, 1u8, 0u8];
-const BLINK_ERR_5_SHORT: [u8; 10] = [1u8, 0u8, 1u8, 0u8, 1u8, 0u8, 1u8, 0u8, 1u8, 0u8];
-const BLINK_ERR_6_SHORT: [u8; 12] = [1u8, 0u8, 1u8, 0u8, 1u8, 0u8, 1u8, 0u8, 1u8, 0u8, 1u8, 0u8];
-
-fn blink_signals(
-    pin: &mut dyn embedded_hal::digital::v2::OutputPin<Error = core::convert::Infallible>,
-    delay: &mut cortex_m::delay::Delay,
-    sig: &[u8],
-) {
-    for bit in sig {
-        if *bit != 0 {
-            pin.set_high().unwrap();
-        } else {
-            pin.set_low().unwrap();
-        }
-
-        let length = if *bit > 0 { *bit } else { 1 };
-
-        for _ in 0..length {
-            delay.delay_ms(100);
-        }
-    }
-
-    pin.set_low().unwrap();
-
-    delay.delay_ms(500);
-}
-
-fn blink_signals_loop(
-    pin: &mut dyn embedded_hal::digital::v2::OutputPin<Error = core::convert::Infallible>,
-    delay: &mut cortex_m::delay::Delay,
-    sig: &[u8],
-) -> ! {
-    loop {
-        blink_signals(pin, delay, sig);
-        delay.delay_ms(1000);
-    }
-}
 
 #[entry]
 fn main() -> ! {
-    info!("Program start");
-
-    // Grab our singleton objects
     let mut pac = pac::Peripherals::take().unwrap();
-    let core = pac::CorePeripherals::take().unwrap();
+    let cp = pac::CorePeripherals::take().unwrap();
 
-    // Set up the watchdog driver - needed by the clock setup code
     let mut watchdog = hal::Watchdog::new(pac.WATCHDOG);
 
-    // Configure the clocks
-    //
-    // The default is to generate a 125 MHz system clock
     let clocks = hal::clocks::init_clocks_and_plls(
         rp_pico::XOSC_CRYSTAL_FREQ,
         pac.XOSC,
@@ -232,150 +87,291 @@ fn main() -> ! {
         &mut pac.RESETS,
     );
 
+    
     // Set the LED to be an output
     let mut led_pin = pins.led.into_push_pull_output();
+    led_pin.set_high().unwrap();
 
-    // Setup a delay for the LED blink signals:
-    let mut delay = cortex_m::delay::Delay::new(core.SYST, clocks.system_clock.freq().integer());
+    let mut delay = cortex_m::delay::Delay::new(cp.SYST, 125_000_000);
 
+    delay.delay_ms(1);
+
+    // Set up the USB driver
+    let usb_bus = UsbBusAllocator::new(hal::usb::UsbBus::new(
+        pac.USBCTRL_REGS,
+        pac.USBCTRL_DPRAM,
+        clocks.usb_clock,
+        true,
+        &mut pac.RESETS,
+    ));
+
+    // Set up the USB Communications Class Device driver
+    let mut serial = SerialPort::new(&usb_bus);
+
+    // Create a USB device with a fake VID and PID
+    let mut usb_dev = UsbDeviceBuilder::new(&usb_bus, UsbVidPid(0x16c0, 0x27dd))
+        .manufacturer("EmbeddedRust")
+        .product("Eyes")
+        .serial_number("0.1")
+        .device_class(2) // from: https://www.usb.org/defined-class-codes
+        .build();
+
+    let timer = hal::Timer::new(pac.TIMER, &mut pac.RESETS);
+
+    // experiment with some bootrom functions and data
+    let version_nb = rom_version_number();
+    // Create a fixed buffer to store screen contents
+    let mut strbuf = ArrayString::<500>::new();
+    writeln!(&mut strbuf, "Version = {} !\n", version_nb).unwrap();
+    
+
+    //flash_experiment();
+
+    // SETUP SCREEN
+
+    // SCL		GP10 (pin 14)
+    // SDA		GP11 (pin 15) (MOSI)
+    // RES		GP12 (pin 16)
+    // DC		GP13 (pin 17)
+
+    // Configure pins
     // These are implicitly used by the spi driver if they are in the correct mode
-    let _spi_sclk = pins.gpio2.into_mode::<gpio::FunctionSpi>();
-    let _spi_mosi = pins.gpio3.into_mode::<gpio::FunctionSpi>();
-    let _spi_miso = pins.gpio4.into_mode::<gpio::FunctionSpi>();
-    let spi_cs = pins.gpio5.into_push_pull_output();
+    let _spi_sclk = pins.gpio10.into_mode::<hal::gpio::FunctionSpi>();
+    let _spi_mosi = pins.gpio11.into_mode::<hal::gpio::FunctionSpi>();
 
-    // Create an SPI driver instance for the SPI0 device
-    let spi = spi::Spi::<_, _, 8>::new(pac.SPI0);
+    let dc = pins.gpio13.into_push_pull_output();
+    let res = pins.gpio12.into_push_pull_output();
 
-    // Exchange the uninitialised SPI driver for an initialised one
+    // Chip select
+    let cs = pins.gpio15.into_push_pull_output();
+    // Backlight
+    // let bl = pins.gpio14.into_push_pull_output();
+
+    // Setup and init the SPI device (SPI1 !)
+    let spi = rp_pico::hal::Spi::<_, _, 8>::new(pac.SPI1);
+
     let spi = spi.init(
         &mut pac.RESETS,
         clocks.peripheral_clock.freq(),
         16_000_000u32.Hz(),
-        &embedded_hal::spi::MODE_0,
+        &embedded_hal::spi::MODE_3,
     );
 
-    info!("Aquire SPI SD/MMC BlockDevice...");
-    let mut sdspi = SdMmcSpi::new(spi, spi_cs);
+    let display_width = 240;
+    let display_height = 240;
 
-    blink_signals(&mut led_pin, &mut delay, &BLINK_OK_LONG);
+    let display_interface = display_interface_spi::SPIInterface::new(spi, dc, cs);
 
-    // Next we need to aquire the block device and initialize the
-    // communication with the SD card.
-    let block = match sdspi.acquire() {
-        Ok(block) => block,
-        Err(e) => {
-            error!("Error retrieving card size: {}", defmt::Debug2Format(&e));
-            blink_signals_loop(&mut led_pin, &mut delay, &BLINK_ERR_2_SHORT);
-        }
-    };
+    let mut display = st7789::ST7789::new(
+        display_interface,
+        res,
+        display_width as _,
+        display_height as _,
+    );
 
-    blink_signals(&mut led_pin, &mut delay, &BLINK_OK_LONG);
+    // initialize
+    display.init(&mut delay).unwrap();
 
-    info!("Init SD card controller...");
-    let mut cont = Controller::new(block, DummyTimesource::default());
+    // set default orientation
+    display
+        .set_orientation(st7789::Orientation::Landscape)
+        .unwrap();
+    display
+        .set_tearing_effect(st7789::TearingEffect::HorizontalAndVertical)
+        .unwrap();
 
-    blink_signals(&mut led_pin, &mut delay, &BLINK_OK_LONG);
-
-    info!("OK!\nCard size...");
-    match cont.device().card_size_bytes() {
-        Ok(size) => info!("card size is {} bytes", size),
-        Err(e) => {
-            error!("Error retrieving card size: {}", defmt::Debug2Format(&e));
-            blink_signals_loop(&mut led_pin, &mut delay, &BLINK_ERR_3_SHORT);
-        }
-    }
-
-    blink_signals(&mut led_pin, &mut delay, &BLINK_OK_LONG);
-
-    info!("Getting Volume 0...");
-    let mut volume = match cont.get_volume(VolumeIdx(0)) {
-        Ok(v) => v,
-        Err(e) => {
-            error!("Error getting volume 0: {}", defmt::Debug2Format(&e));
-            blink_signals_loop(&mut led_pin, &mut delay, &BLINK_ERR_4_SHORT);
-        }
-    };
-
-    blink_signals(&mut led_pin, &mut delay, &BLINK_OK_LONG);
-
-    // After we have the volume (partition) of the drive we got to open the
-    // root directory:
-    let dir = match cont.open_root_dir(&volume) {
-        Ok(dir) => dir,
-        Err(e) => {
-            error!("Error opening root dir: {}", defmt::Debug2Format(&e));
-            blink_signals_loop(&mut led_pin, &mut delay, &BLINK_ERR_5_SHORT);
-        }
-    };
-
-    info!("Root directory opened!");
-    blink_signals(&mut led_pin, &mut delay, &BLINK_OK_LONG);
-
-    // This shows how to iterate through the directory and how
-    // to get the file names (and print them in hope they are UTF-8 compatible):
-    cont.iterate_dir(&volume, &dir, |ent| {
-        info!(
-            "/{}.{}",
-            core::str::from_utf8(ent.name.base_name()).unwrap(),
-            core::str::from_utf8(ent.name.extension()).unwrap()
-        );
-    })
-    .unwrap();
-
-    blink_signals(&mut led_pin, &mut delay, &BLINK_OK_LONG);
-
-    let mut successful_read = false;
-
-    // Next we going to read a file from the SD card:
-    if let Ok(mut file) = cont.open_file_in_dir(&mut volume, &dir, "O.TST", Mode::ReadOnly) {
-        let mut buf = [0u8; 32];
-        let read_count = cont.read(&volume, &mut file, &mut buf).unwrap();
-        cont.close_file(&volume, file).unwrap();
-
-        if read_count >= 2 {
-            info!("READ {} bytes: {}", read_count, buf);
-
-            // If we read what we wrote before the last reset,
-            // we set a flag so that the success blinking at the end
-            // changes it's pattern.
-            if buf[0] == 0x42 && buf[1] == 0x1E {
-                successful_read = true;
+    for yp in 0..display_height {
+        for xp in 0..display_width {
+            if xp < 100 && yp < 150 {
+                display.set_pixel(xp, yp, 0xFF00).unwrap();
+            } else {
+                display.set_pixel(xp, yp, 0xFFFF).unwrap();
             }
         }
     }
 
-    blink_signals(&mut led_pin, &mut delay, &BLINK_OK_LONG);
 
-    match cont.open_file_in_dir(&mut volume, &dir, "O.TST", Mode::ReadWriteCreateOrTruncate) {
-        Ok(mut file) => {
-            cont.write(&mut volume, &mut file, b"\x42\x1E").unwrap();
-            cont.close_file(&volume, file).unwrap();
-        }
-        Err(e) => {
-            error!("Error opening file 'O.TST': {}", defmt::Debug2Format(&e));
-            blink_signals_loop(&mut led_pin, &mut delay, &BLINK_ERR_6_SHORT);
-        }
-    }
+    let raw_image_data = ImageRawLE::new(include_bytes!("../assets/ferris.raw"), 86);
+    let ferris = Image::new(&raw_image_data, Point::new(34, 8));
 
-    cont.free();
+    // draw image on black background
+    //display.clear(Rgb565::BLACK).unwrap();
+    ferris.draw(&mut display).unwrap();
 
-    blink_signals(&mut led_pin, &mut delay, &BLINK_OK_LONG);
+    
+    let blit_buffer = vec![0u16; display_width * display_height];
 
-    if successful_read {
-        info!("Successfully read previously written file 'O.TST'");
-    } else {
-        info!("Could not read file, which is ok for the first run.");
-        info!("Reboot the pico!");
-    }
 
+
+    // reset LCD
+    // res.set_high().unwrap();
+    // delay.delay_ms(50);
+    // res.set_low().unwrap();
+    // delay.delay_ms(150);
+    // res.set_high().unwrap();
+    // delay.delay_ms(150);
+
+
+
+    // let spi = spi.init(
+    //     &mut pac.RESETS,
+    //     // check if 16 MHZ clocks.peripheral_clock.freq(),
+    //     16_000_000u32,
+    //     32_000_000u32,
+    //     &embedded_hal::spi::MODE_3,
+    // );
+
+    // let display_interface = display_interface_spi::SPIInterface::new(spi, dc, cs);
+    
+    // let mut display = st7789::ST7789::new(
+    //     display_interface,
+    //     None,
+    //     Some(bl),
+    //     properties.display_width as _,
+    //     properties.display_height as _,
+    // );
+
+    // END SCREEN SETUP
+    let mut said_hello = false;
     loop {
-        if successful_read {
-            blink_signals(&mut led_pin, &mut delay, &BLINK_OK_SHORT_SHORT_LONG);
-        } else {
-            blink_signals(&mut led_pin, &mut delay, &BLINK_OK_SHORT_LONG);
+        // A welcome message at the beginning
+        if !said_hello && timer.get_counter() >= 2_000_000 {
+            said_hello = true;
+
+            drop( serial.write(b"Welcome to PICO ALTEST v0.2b \r\n") );
+            drop( serial.write(strbuf.as_bytes()));
         }
 
-        delay.delay_ms(1000);
+        // Check for new data
+        if usb_dev.poll(&mut [&mut serial]) {
+            let mut buf = [0u8; 64];
+            match serial.read(&mut buf) {
+                Err(_e) => {
+                    // Do nothing
+                }
+                Ok(0) => {
+                    // Do nothing
+                }
+                Ok(count) => {
+                    // Convert to upper case
+                    buf.iter_mut().take(count).for_each(|b| {
+                        b.make_ascii_uppercase();
+                    });
+
+                    // check for reset R
+                    if buf[0] == 82 {
+                        drop( serial.write(b"Going down!!!!\r\n") );
+                        reset_to_usb_boot(0,0);
+                        //watchdog.enable_tick_generation((rp_pico::XOSC_CRYSTAL_FREQ / 1_000_000) as u8);
+                    }
+                    // check for S
+                    if buf[0] == 83 {
+                        unsafe {
+                            let counter = COUNTER_ADDRESS as *mut u32;
+                            let counter_val = *counter;    
+
+                            strbuf.clear();
+                            writeln!(strbuf,"Counter value {}", counter_val).unwrap();
+                            //dump::dump( slice::from_raw_parts(COUNTER_ADDRESS as *const u8 , 4), 0, &mut strbuf);
+                        }
+                        drop( serial.write(b"FLASH experiment\r\n") );
+                        drop( serial.write(strbuf.as_bytes()));
+                        flash_experiment();
+                        drop( serial.write(b"FLASH experiment finished \r\n") );
+                    }
+
+                    // dump memory T
+                    if buf[0] == 84 {
+                        serial.write(b"Memory dump flash at COUNTER_ADDRESS\r\n").unwrap();
+                        strbuf.clear();
+                        unsafe {
+                            dump::dump( slice::from_raw_parts(COUNTER_ADDRESS as *const u8 , 32), 0, &mut strbuf);
+                        }
+
+                        drop( serial.write(strbuf.as_bytes()));
+                    }                    
+                    // Send back to the host
+                    let mut wr_ptr = &buf[..count];
+                    while !wr_ptr.is_empty() {
+                        match serial.write(wr_ptr) {
+                            Ok(len) => wr_ptr = &wr_ptr[len..],
+                            // On error, just drop unwritten data.
+                            // One possible error is Err(WouldBlock), meaning the USB
+                            // write buffer is full.
+                            Err(_) => break,
+                        };
+                    }
+                }
+            }
+        }
     }
+}
+
+
+#[inline(never)]
+//#[link_section = ".data.code"]
+#[link_section = ".data.ram_func"]
+fn flash_experiment( ) {
+
+    unsafe {
+        let mut data  = [0;256];
+        let counter = COUNTER_ADDRESS as *mut u32;
+        let counter_val = *counter;    
+    
+        *(data.as_mut_ptr() as *mut u32) = counter_val + 1;
+
+        let connect_internal_flash : extern "C" fn() = rom_table_lookup( *b"IF" );
+        let flash_exit_cmd_xip : extern "C" fn() = rom_table_lookup( *b"EX" );
+        let flash_range_erase : extern "C" fn(u32, usize, u32, u8) = rom_table_lookup( *b"RE");
+        let flash_range_program : extern "C" fn(u32, *const u8, usize ) = rom_table_lookup( *b"RP" );
+        let flash_flush_cache : extern "C" fn() = rom_table_lookup( *b"FC" );
+        let flash_enter_cmd_xip : extern "C" fn() = rom_table_lookup( *b"CX" );
+
+        connect_internal_flash();
+        flash_exit_cmd_xip();
+        flash_range_erase( COUNTER_OFFSET, 1<<12,1<<16,0xD8);
+        flash_range_program( COUNTER_OFFSET, data.as_ptr(), data.len());
+        flash_flush_cache();
+        flash_enter_cmd_xip();    
+    }
+}
+
+
+/// Pointer to helper functions lookup table.
+const FUNC_TABLE: *const u16 = 0x0000_0014 as _;
+/// The following addresses are described at `2.8.2. Bootrom Contents`
+/// Pointer to the lookup table function supplied by the rom.
+const ROM_TABLE_LOOKUP_PTR: *const u16 = 0x0000_0018 as _;
+
+
+/// This function searches for (table)
+type RomTableLookupFn<T> = unsafe extern "C" fn(*const u16, u32) -> T;
+
+/// A bootrom function table code.
+pub type RomFnTableCode = [u8; 2];
+
+
+/// Retrive rom content from a table using a code.
+#[inline(always)]
+fn rom_table_lookup<T>(tag: RomFnTableCode) -> T {
+    unsafe {
+        let rom_table_lookup_ptr: *const u32 = rom_hword_as_ptr(ROM_TABLE_LOOKUP_PTR);
+        let rom_table_lookup: RomTableLookupFn<T> = core::mem::transmute(rom_table_lookup_ptr);
+        rom_table_lookup(
+            rom_hword_as_ptr(FUNC_TABLE) as *const u16,
+            u16::from_le_bytes(tag) as u32,
+        )
+    }
+}
+
+/// To save space, the ROM likes to store memory pointers (which are 32-bit on
+/// the Cortex-M0+) using only the bottom 16-bits. The assumption is that the
+/// values they point at live in the first 64 KiB of ROM, and the ROM is mapped
+/// to address `0x0000_0000` and so 16-bits are always sufficient.
+///
+/// This functions grabs a 16-bit value from ROM and expands it out to a full 32-bit pointer.
+#[inline(always)]
+unsafe fn rom_hword_as_ptr(rom_address: *const u16) -> *const u32 {
+    let ptr: u16 = *rom_address;
+    ptr as *const u32
 }

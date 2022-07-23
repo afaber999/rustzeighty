@@ -10,7 +10,8 @@ cortex-m = "0.7"
 cortex-m-rt = { version = "0.7" }
 embedded-hal = { version = "0.2.5", features = ["unproven"] }
 embedded-time = "0.12"
-
+embedded-graphics = "0.7.1"
+alloc-cortex-m = "0.4"
 usb-device = "0.2.8"
 usbd-serial = "0.1.1"
 

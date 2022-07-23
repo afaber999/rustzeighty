@@ -4,6 +4,12 @@
 mod dump;
 
 use arrayvec::ArrayString;
+use embedded_graphics::Drawable;
+use embedded_graphics::image::Image;
+use embedded_graphics::image::ImageRawLE;
+use embedded_graphics::pixelcolor::Rgb565;
+use embedded_graphics::prelude::Point;
+use embedded_graphics::prelude::RgbColor;
 // The macro for our start-up function
 use rp_pico::entry;
 
@@ -40,9 +46,15 @@ use usb_device::device::UsbDeviceBuilder;
 use usb_device::device::UsbVidPid;
 use usbd_serial::SerialPort;
 
+extern crate alloc;
+use alloc::vec::Vec;
+use alloc_cortex_m::CortexMHeap;
+use core::alloc::Layout;
+
 const FLASH_BASE : u32= 0x1000_0000;
 const COUNTER_OFFSET : u32= 0x0010_0000;
 const COUNTER_ADDRESS : u32= FLASH_BASE + COUNTER_OFFSET; 
+
 
 
 #[entry]
@@ -177,6 +189,20 @@ fn main() -> ! {
             }
         }
     }
+
+
+    let raw_image_data = ImageRawLE::new(include_bytes!("../assets/ferris.raw"), 86);
+    let ferris = Image::new(&raw_image_data, Point::new(34, 8));
+
+    // draw image on black background
+    //display.clear(Rgb565::BLACK).unwrap();
+    ferris.draw(&mut display).unwrap();
+
+    
+    let blit_buffer = vec![0u16; display_width * display_height];
+
+
+
     // reset LCD
     // res.set_high().unwrap();
     // delay.delay_ms(50);
