@@ -1,6 +1,27 @@
 #![no_std]
 #![no_main]
 
+#![feature(alloc_error_handler)]
+extern crate alloc;
+
+use alloc::vec;
+use alloc::vec::Vec;
+use alloc_cortex_m::CortexMHeap;
+use embedded_graphics::draw_target::DrawTarget;
+use embedded_graphics::primitives::Rectangle;
+use core::alloc::Layout;
+
+
+
+#[global_allocator]
+static ALLOCATOR: CortexMHeap = CortexMHeap::empty();
+
+#[alloc_error_handler]
+fn oom(_: Layout) -> ! {
+    loop {}
+}
+
+
 mod dump;
 
 use arrayvec::ArrayString;
@@ -9,6 +30,8 @@ use embedded_graphics::image::Image;
 use embedded_graphics::image::ImageRawLE;
 use embedded_graphics::pixelcolor::Rgb565;
 use embedded_graphics::prelude::Point;
+use embedded_graphics::geometry::Size;
+
 use embedded_graphics::prelude::RgbColor;
 // The macro for our start-up function
 use rp_pico::entry;
@@ -46,19 +69,21 @@ use usb_device::device::UsbDeviceBuilder;
 use usb_device::device::UsbVidPid;
 use usbd_serial::SerialPort;
 
-extern crate alloc;
-use alloc::vec::Vec;
-use alloc_cortex_m::CortexMHeap;
-use core::alloc::Layout;
-
 const FLASH_BASE : u32= 0x1000_0000;
 const COUNTER_OFFSET : u32= 0x0010_0000;
 const COUNTER_ADDRESS : u32= FLASH_BASE + COUNTER_OFFSET; 
 
 
+//static mut screen_buffer: [u16;240 * 240 ] = [0;240 * 240 ];
+use core::mem::MaybeUninit;
+static mut HEAP: [MaybeUninit<u8>; HEAP_SIZE] = [MaybeUninit::uninit(); HEAP_SIZE];
+const HEAP_SIZE: usize = 145 * 1024;
 
 #[entry]
 fn main() -> ! {
+
+    unsafe { ALLOCATOR.init(HEAP.as_ptr() as usize, HEAP_SIZE) }
+ 
     let mut pac = pac::Peripherals::take().unwrap();
     let cp = pac::CorePeripherals::take().unwrap();
 
@@ -180,58 +205,33 @@ fn main() -> ! {
         .set_tearing_effect(st7789::TearingEffect::HorizontalAndVertical)
         .unwrap();
 
-    for yp in 0..display_height {
-        for xp in 0..display_width {
-            if xp < 100 && yp < 150 {
-                display.set_pixel(xp, yp, 0xFF00).unwrap();
-            } else {
-                display.set_pixel(xp, yp, 0xFFFF).unwrap();
-            }
-        }
-    }
+    drop( display.clear(Rgb565::GREEN));
+
 
 
     let raw_image_data = ImageRawLE::new(include_bytes!("../assets/ferris.raw"), 86);
     let ferris = Image::new(&raw_image_data, Point::new(34, 8));
 
-    // draw image on black background
-    //display.clear(Rgb565::BLACK).unwrap();
+    let mut screen_buffer : Vec<u16> = vec![55u16; display_width * display_height ];
+
+   // let raw_image_vec = ImageRawLE::new( &screen_buffer, display_width as u32);
+   // let vec_img = Image::new(&raw_image_vec, Point::new(0, 0));
+
+    let mut idx = 0;
+    for yp in 0..display_height {
+           for xp in 0..display_width {
+                if xp < 100 && yp < 150 {
+                    screen_buffer[idx] = 0x0FF0;
+                } else {
+                    screen_buffer[idx] = 0xFFFF;
+                }
+                idx += 1;
+            }
+    }
+
+    //drop( display.set_pixels(0,0,display_width,display_height, screen_buffer.iter().map(|x| *x)));
     ferris.draw(&mut display).unwrap();
 
-    
-    let blit_buffer = vec![0u16; display_width * display_height];
-
-
-
-    // reset LCD
-    // res.set_high().unwrap();
-    // delay.delay_ms(50);
-    // res.set_low().unwrap();
-    // delay.delay_ms(150);
-    // res.set_high().unwrap();
-    // delay.delay_ms(150);
-
-
-
-    // let spi = spi.init(
-    //     &mut pac.RESETS,
-    //     // check if 16 MHZ clocks.peripheral_clock.freq(),
-    //     16_000_000u32,
-    //     32_000_000u32,
-    //     &embedded_hal::spi::MODE_3,
-    // );
-
-    // let display_interface = display_interface_spi::SPIInterface::new(spi, dc, cs);
-    
-    // let mut display = st7789::ST7789::new(
-    //     display_interface,
-    //     None,
-    //     Some(bl),
-    //     properties.display_width as _,
-    //     properties.display_height as _,
-    // );
-
-    // END SCREEN SETUP
     let mut said_hello = false;
     loop {
         // A welcome message at the beginning
@@ -266,18 +266,38 @@ fn main() -> ! {
                     }
                     // check for S
                     if buf[0] == 83 {
-                        unsafe {
-                            let counter = COUNTER_ADDRESS as *mut u32;
-                            let counter_val = *counter;    
+                        strbuf.clear();
+                        let v1 = vec![2i32;10];
+  
 
-                            strbuf.clear();
-                            writeln!(strbuf,"Counter value {}", counter_val).unwrap();
-                            //dump::dump( slice::from_raw_parts(COUNTER_ADDRESS as *const u8 , 4), 0, &mut strbuf);
+
+                        unsafe { 
+                           let ptr =  HEAP.as_ptr();
+
+
+                            writeln!(strbuf, "HEAP Used: {} bytes, free: {} bytes HEAP {:?} v1 {} v2 {} ",
+                        ALLOCATOR.used(),
+                        ALLOCATOR.free() ,
+                        ptr,
+                        v1[1],
+                        screen_buffer[1]
+
+                    ).unwrap();
                         }
-                        drop( serial.write(b"FLASH experiment\r\n") );
                         drop( serial.write(strbuf.as_bytes()));
-                        flash_experiment();
-                        drop( serial.write(b"FLASH experiment finished \r\n") );
+
+                        // unsafe {
+                        //     let counter = COUNTER_ADDRESS as *mut u32;
+                        //     let counter_val = *counter;    
+
+                        //     strbuf.clear();
+                        //     writeln!(strbuf,"Counter value {}", counter_val).unwrap();
+                        //     //dump::dump( slice::from_raw_parts(COUNTER_ADDRESS as *const u8 , 4), 0, &mut strbuf);
+                        // }
+                        // drop( serial.write(b"FLASH experiment\r\n") );
+                        // drop( serial.write(strbuf.as_bytes()));
+                        // //flash_experiment();
+                        // drop( serial.write(b"FLASH experiment finished \r\n") );
                     }
 
                     // dump memory T
@@ -305,73 +325,4 @@ fn main() -> ! {
             }
         }
     }
-}
-
-
-#[inline(never)]
-//#[link_section = ".data.code"]
-#[link_section = ".data.ram_func"]
-fn flash_experiment( ) {
-
-    unsafe {
-        let mut data  = [0;256];
-        let counter = COUNTER_ADDRESS as *mut u32;
-        let counter_val = *counter;    
-    
-        *(data.as_mut_ptr() as *mut u32) = counter_val + 1;
-
-        let connect_internal_flash : extern "C" fn() = rom_table_lookup( *b"IF" );
-        let flash_exit_cmd_xip : extern "C" fn() = rom_table_lookup( *b"EX" );
-        let flash_range_erase : extern "C" fn(u32, usize, u32, u8) = rom_table_lookup( *b"RE");
-        let flash_range_program : extern "C" fn(u32, *const u8, usize ) = rom_table_lookup( *b"RP" );
-        let flash_flush_cache : extern "C" fn() = rom_table_lookup( *b"FC" );
-        let flash_enter_cmd_xip : extern "C" fn() = rom_table_lookup( *b"CX" );
-
-        connect_internal_flash();
-        flash_exit_cmd_xip();
-        flash_range_erase( COUNTER_OFFSET, 1<<12,1<<16,0xD8);
-        flash_range_program( COUNTER_OFFSET, data.as_ptr(), data.len());
-        flash_flush_cache();
-        flash_enter_cmd_xip();    
-    }
-}
-
-
-/// Pointer to helper functions lookup table.
-const FUNC_TABLE: *const u16 = 0x0000_0014 as _;
-/// The following addresses are described at `2.8.2. Bootrom Contents`
-/// Pointer to the lookup table function supplied by the rom.
-const ROM_TABLE_LOOKUP_PTR: *const u16 = 0x0000_0018 as _;
-
-
-/// This function searches for (table)
-type RomTableLookupFn<T> = unsafe extern "C" fn(*const u16, u32) -> T;
-
-/// A bootrom function table code.
-pub type RomFnTableCode = [u8; 2];
-
-
-/// Retrive rom content from a table using a code.
-#[inline(always)]
-fn rom_table_lookup<T>(tag: RomFnTableCode) -> T {
-    unsafe {
-        let rom_table_lookup_ptr: *const u32 = rom_hword_as_ptr(ROM_TABLE_LOOKUP_PTR);
-        let rom_table_lookup: RomTableLookupFn<T> = core::mem::transmute(rom_table_lookup_ptr);
-        rom_table_lookup(
-            rom_hword_as_ptr(FUNC_TABLE) as *const u16,
-            u16::from_le_bytes(tag) as u32,
-        )
-    }
-}
-
-/// To save space, the ROM likes to store memory pointers (which are 32-bit on
-/// the Cortex-M0+) using only the bottom 16-bits. The assumption is that the
-/// values they point at live in the first 64 KiB of ROM, and the ROM is mapped
-/// to address `0x0000_0000` and so 16-bits are always sufficient.
-///
-/// This functions grabs a 16-bit value from ROM and expands it out to a full 32-bit pointer.
-#[inline(always)]
-unsafe fn rom_hword_as_ptr(rom_address: *const u16) -> *const u32 {
-    let ptr: u16 = *rom_address;
-    ptr as *const u32
 }
