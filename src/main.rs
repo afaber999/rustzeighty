@@ -3,32 +3,50 @@
 
 mod dump;
 
-use rp_pico::{entry, hal::rom_data::{rom_version_number, reset_to_usb_boot}};
-use panic_halt as _;
-use rp_pico::hal::pac;
-use rp_pico::hal;
-use usb_device::{class_prelude::*, prelude::*};
-use usbd_serial::SerialPort;
-use core::{fmt::Write, slice};
 use arrayvec::ArrayString;
+// The macro for our start-up function
+use rp_pico::entry;
+
+// Ensure we halt the program on panic (if we don't mention this crate it won't
+// be linked)
+use panic_halt as _;
+
+// Pull in any important traits
+use rp_pico::hal::prelude::*;
+
+// Embed the `Hz` function/trait:
+use embedded_time::rate::*;
+
+// A shorter alias for the Peripheral Access Crate, which provides low-level
+// register access
+use rp_pico::hal::pac;
+
+use rp_pico::hal::rom_data::reset_to_usb_boot;
+use rp_pico::hal::rom_data::rom_version_number;
+// Import the SPI abstraction:
+use rp_pico::hal::spi;
+
+// Import the GPIO abstraction:
+use rp_pico::hal::gpio;
+
+// A shorter alias for the Hardware Abstraction Layer, which provides
+// higher-level drivers.
+use rp_pico::hal;
+use core::{fmt::Write, slice};
 
 use embedded_hal::digital::v2::OutputPin;
+use usb_device::class_prelude::UsbBusAllocator;
+use usb_device::device::UsbDeviceBuilder;
+use usb_device::device::UsbVidPid;
+use usbd_serial::SerialPort;
 
 const FLASH_BASE : u32= 0x1000_0000;
 const COUNTER_OFFSET : u32= 0x0010_0000;
 const COUNTER_ADDRESS : u32= FLASH_BASE + COUNTER_OFFSET; 
 
 
-// Pull in any important traits
-use rp_pico::hal::prelude::*;
-
-// Import the SPI abstraction:
-use rp_pico::hal::spi;
-
 #[entry]
 fn main() -> ! {
-
-
     let mut pac = pac::Peripherals::take().unwrap();
     let cp = pac::CorePeripherals::take().unwrap();
 
@@ -110,10 +128,10 @@ fn main() -> ! {
     let _spi_mosi = pins.gpio11.into_mode::<hal::gpio::FunctionSpi>();
 
     let dc = pins.gpio13.into_push_pull_output();
-    let mut res = pins.gpio12.into_push_pull_output();
+    let res = pins.gpio12.into_push_pull_output();
 
     // Chip select
-    // let cs = pins.gpio15.into_push_pull_output();
+    let cs = pins.gpio15.into_push_pull_output();
     // Backlight
     // let bl = pins.gpio14.into_push_pull_output();
 
@@ -122,19 +140,50 @@ fn main() -> ! {
 
     let spi = spi.init(
         &mut pac.RESETS,
-        // check if 16 MHZ clocks.peripheral_clock.freq(),
-        16_000_000u32,
-        32_000_000u32,
+        clocks.peripheral_clock.freq(),
+        16_000_000u32.Hz(),
         &embedded_hal::spi::MODE_3,
     );
 
+    let display_width = 240;
+    let display_height = 240;
+
+    let display_interface = display_interface_spi::SPIInterface::new(spi, dc, cs);
+
+    let mut display = st7789::ST7789::new(
+        display_interface,
+        res,
+        display_width as _,
+        display_height as _,
+    );
+
+    // initialize
+    display.init(&mut delay).unwrap();
+
+    // set default orientation
+    display
+        .set_orientation(st7789::Orientation::Landscape)
+        .unwrap();
+    display
+        .set_tearing_effect(st7789::TearingEffect::HorizontalAndVertical)
+        .unwrap();
+
+    for yp in 0..display_height {
+        for xp in 0..display_width {
+            if xp < 100 && yp < 150 {
+                display.set_pixel(xp, yp, 0xFF00).unwrap();
+            } else {
+                display.set_pixel(xp, yp, 0xFFFF).unwrap();
+            }
+        }
+    }
     // reset LCD
-    res.set_high().unwrap();
-    delay.delay_ms(50);
-    res.set_low().unwrap();
-    delay.delay_ms(150);
-    res.set_high().unwrap();
-    delay.delay_ms(150);
+    // res.set_high().unwrap();
+    // delay.delay_ms(50);
+    // res.set_low().unwrap();
+    // delay.delay_ms(150);
+    // res.set_high().unwrap();
+    // delay.delay_ms(150);
 
 
 
