@@ -28,3 +28,6 @@ target = "thumbv6m-none-eabi"
 
 [env]
 DEFMT_LOG = "debug"
+
+[http]
+check-revoke = false

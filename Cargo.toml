@@ -1,5 +1,5 @@
 [package]
-name = "altest1"
+name = "rustzeighty"
 version = "0.1.0"
 edition = "2021"
 
@@ -19,15 +19,24 @@ panic-halt = "0.2.0"
 arrayvec = { version = "0.7.1", default-features = false }
 
 # We're using a Pico by default on this template
-rp-pico = "0.4"
-display-interface-spi = "0.4.1"
-st7789 = "0.6.1"
+rp-pico = "0.5"
 # but you can use any BSP. Uncomment this to use the pro_micro_rp2040 BSP instead
 # sparkfun-pro-micro-rp2040 = "0.3"
 
 # If you're not going to use a Board Support Package you'll need these:
 # rp2040-hal = { version="0.5", features=["rt"] }
 # rp2040-boot2 = "0.2"
+
+[lib]
+name = "rz80"
+path = "src/rz80/lib.rs"
+test = true
+bench = false
+crate-type = ["lib"]
+
+[[bin]]
+name = "rustzeighty"
+path = "src/rustzeighty_rp2040/main.rs"
 
 
 # cargo build/run
