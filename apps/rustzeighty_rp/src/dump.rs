@@ -9,7 +9,7 @@ use core::fmt::Write;
 /// # Panics
 ///
 /// Panics if .
-pub fn dump(data : &[u8], base: u32, str : &mut ArrayString::<500>) {
+pub fn dump(data : &[u8], base: u32, str : &mut ArrayString::<4096>) {
 
     for (i, val) in data.iter().enumerate() {
         if (i %  16) == 0 {

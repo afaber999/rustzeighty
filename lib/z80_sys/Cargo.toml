@@ -1,0 +1,17 @@
+[package]
+name = "z80_sys"
+version = "0.1.0"
+authors = ["A.L. Faber"]
+edition = "2021"
+
+[lib]
+name = "z80_sys"
+path = "src/lib.rs"
+test = true
+bench = false
+crate-type = ["lib"]
+
+# cargo test
+[profile.test]
+overflow-checks = true
+

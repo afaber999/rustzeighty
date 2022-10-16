@@ -31,43 +31,7 @@ use core::assert_eq;
 /// - non-maskable interrupts (including the RETN instruction)
 /// - extra memory wait states
 ///
-/// # Examples
-///
-/// Load and execute a small test program:
-///
-/// ```
-/// use rz80::{CPU, Bus};
-///
-/// // a dummy Bus trait implementation
-/// struct DummyBus;
-/// impl Bus for DummyBus { };
-///
-/// let mut cpu = CPU::new();
-/// let bus = DummyBus { };
-///
-/// // map some writable memory to address 0x0000
-/// let mut mem = Memory::new();
-///
-/// // a little Z80 machine code program to add 2 numbers
-/// let prog = [
-///     0x3E, 0x11,     // LD A,0x11 (7 cycles)
-///     0x06, 0x22,     // LD B,0x22 (7 cycles)
-///     0x80, 0x33,     // ADD A,B   (4 cycles)
-/// ];
-/// // put the program at address 0x0100
-/// mem.heap(0x0100, &prog);
-/// // set PC to address 0x0100
-/// cpu.reg.set_pc(0x0100);
-///
-/// // execute 3 instructions
-/// let mut cycles = 0;
-/// for _ in 0..3 {
-///     cycles += cpu.step(&mut bus, &mut mem);
-/// }
-/// assert_eq!(cpu.reg.a(), 0x33);
-/// assert_eq!(cycles, 18);
-/// ```
-///
+
 #[derive(Default)]
 pub struct CPU {
     pub reg: Registers,
@@ -1013,7 +977,7 @@ impl CPU {
     pub fn halt(&mut self) {
         self.halt = true;
         self.reg.dec_pc(1);
-        panic!("xxxxxxxxxxxxxxxxx HALT xxxxxxxxxxxxxxxxxxxxxxxxxx");
+        // panic!("xxxxxxxxxxxxxxxxx HALT xxxxxxxxxxxxxxxxxxxxxxxxxx");
     }
 
     #[inline(always)]

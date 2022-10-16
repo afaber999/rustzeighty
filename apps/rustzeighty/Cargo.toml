@@ -1,0 +1,27 @@
+# https://doc.rust-lang.org/cargo/reference/cargo-targets.html
+
+[package]
+name = "rustzeighty"
+version = "0.1.1"
+license = "MIT"
+authors = ["Albert Faber"]
+description = "Z80 system emulation"
+keywords = ["Z80", "emulation", "emulator", "8-bit"]
+repository = "https://github.com/afaber999/rustzeighty"
+exclude = [".vscode/*"]
+edition = "2021"
+
+
+[[bin]]
+name = "rustzeighty"
+path = "src/main.rs"
+
+[dependencies]
+rz80 = { path = "../../lib/rz80" }
+time = "0.1"
+minifb = "0.23"
+rand = "0.8.5"
+getch = "0.3.1"
+
+[profile.release]
+lto = true
